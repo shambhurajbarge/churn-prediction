@@ -1,0 +1,1180 @@
+---
+title: "Decision Tree - Random Forests-Bagging"
+author: "Shambhuraj Barge"
+output: 
+  html_document:
+    toc: true
+    toc_depth : 4
+    toc_float : true
+---
+
+# Setup Environment
+
+*Clear the Environment
+
+```{r}
+rm(list = ls(all = T))
+```
+
+*Load the required libraries
+
+```{r message = FALSE, warning = FALSE, echo = FALSE}
+library(DMwR)
+library(caret)
+library(C50)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(ipred)
+library(dplyr)
+library(ggcorrplot)
+library(car) 
+library(caret) 
+library(e1071)
+library(mice)
+library(randomForest)
+library(plotROC)
+library(ggplot2)
+library(pROC, quietly=TRUE)
+library(ROCR, quietly=TRUE)
+
+```
+
+
+# Reading & Understanding the Data
+```{r}
+setwd("F:/insofe")
+```
+
+Read the data into R
+
+```{r}
+
+data<-read.csv('WA_Fn-UseC_-Telco-Customer-Churn.csv',header=T,na.strings = c(NA,"?"," "))
+dt<-data
+```
+
+Understand the data with `str()` and `summary()` functions
+
+```{r}
+#View(data)
+str(data)
+
+```
+*observation:-
+
+1.customerID
+2.gender (female, male)
+3.SeniorCitizen (Whether the customer is a senior citizen or not (1, 0))
+4.Partner (Whether the customer has a partner or not (Yes, No))
+5.Dependents (Whether the customer has dependents or not (Yes, No))
+6.tenure (Number of months the customer has stayed with the company)
+7.PhoneService (Whether the customer has a phone service or not (Yes, No))
+8.MultipleLines (Whether the customer has multiple lines r not (Yes, No, No phone service)
+9.InternetService (Customer's internet service provider (DSL, Fiber optic, No)
+10.OnlineSecurity (Whether the customer has online security or not (Yes, No, No internet service)
+11.OnlineBackup (Whether the customer has online backup or not (Yes, No, No internet service)
+12.DeviceProtection (Whether the customer has device protection or not (Yes, No, No internet service)
+13.TechSupport (Whether the customer has tech support or not (Yes, No, No internet service)
+14.streamingTV (Whether the customer has streaming TV or not (Yes, No, No internet service)
+15.streamingMovies (Whether the customer has streaming movies or not (Yes, No, No internet service)
+16.Contract (The contract term of the customer (Month-to-month, One year, Two year)
+17.PaperlessBilling (Whether the customer has paperless billing or not (Yes, No))
+18.PaymentMethod (The customer's payment method (Electronic check, Mailed check, Bank transfer (automatic), Credit card (automatic)))
+19.MonthlyCharges (The amount charged to the customer monthly-numeric)
+20.TotalCharges (The total amount charged to the customer???-???numeric)
+21.Churn ( Whether the customer churned or not (Yes or No))
+The raw data contains 7043 rows (customers) and 21 columns (features). The "Churn" column is our target.
+*The dataset has 7043 observations with 21 variables 
+*Summary
+```{r}
+summary(data)
+```
+total charges has 11 NA's
+
+
+*Check the count of target (churn) variable values
+
+```{r}
+table(data$Churn)
+```
+
+##Dataset Description 
+
+*About the Analysis: Churn is a one of the biggest problem in the telecom industry. Research has shown that the average monthly churn rate among the top 4 wireless carriers in the US is 1.9% - 2%.
+
+##Agenda:-
+
+This analysis focuses on the behavior of telecom customers who are more likely to leave the platform. I intend to find out the most striking behavior of customers through EDA and later on use some of the predictive analytics techniques to determine the customers who are most likely to churn.
+
+
+# Data Preprocessing
+
+* Convert data to the required format
+tenure
+
+```{r}
+summary(data$tenure)
+
+```
+#min-0 months
+#max-72 months
+we can bin it in to  parts
+```{r }
+attach(data)
+#create a function for binning tenure in yearly basis
+tenure_bin<-function(tenure){
+  ifelse(tenure >= 0 & tenure <= 12,1,ifelse(tenure >= 12 & tenure <= 24,2,ifelse(tenure >= 24 & tenure <= 48,3,ifelse(tenure >= 48 & tenure <=60,4,5))))
+}
+data$tenure<-sapply(data$tenure,tenure_bin)
+table(data$tenure)
+```
+
+*Separate Categorical and Numerical Variables 
+
+```{r}
+
+# The numerical variables are:"tenure","MonthlyCharges","TotalCharges "
+ 
+num_Attr = c("MonthlyCharges","TotalCharges")
+
+# The categorical variables are: the remaining 18 variables
+cat_Attr = setdiff(names(data), num_Attr)
+
+
+# Separate numerical and categorical variables and convert them into appropriate type
+cat_Data = data.frame(sapply(data[,cat_Attr], as.factor))
+num_Data = data.frame(sapply(data[,num_Attr], as.numeric))
+
+# Combine the datset back
+data = cbind(num_Data, cat_Data)
+```
+
+
+*Check to see if missing values in data
+
+```{r}
+colSums((is.na(data)))
+#plotting
+library(mice)
+library(VIM)
+library(grid)
+library(data.table)
+aggr_plot <- aggr(data, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(data), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+```
+
+
+
+
+#Exploratory data analysis
+
+*check correlation of num attributes
+```{r}
+
+library(corrplot)
+data_imp<-knnImputation(data)#imputation of NA's
+numeric.var <- sapply(data_imp, is.numeric)
+corr.matrix1 <- cor(data_imp[,numeric.var])
+corrplot(corr.matrix1, main="\n\nCorrelation Plot for Numerical Variables", method="number")
+
+```
+-as both are correlated hence lets remove one..as total charges has NA's hence we will omit it later.
+
+*Remove columns which does not add any information
+```{r}
+data$customerID<-NULL
+data_imp$customerID<-NULL
+```
+Split dataset into train and test
+
+```{r}
+set.seed(123)
+train_Rows = createDataPartition(data_imp$Churn,p = 0.7,list = FALSE)
+train_Data = data_imp[train_Rows,]
+test_Data = data_imp[-train_Rows,]
+
+```
+*churn
+```{r}
+pie <- ggplot(data_imp, aes(x = "", fill = factor(Churn))) + 
+  geom_bar(width = 1) +
+  theme(axis.line = element_blank(), 
+        plot.title = element_text(hjust=0.5)) + 
+  labs(fill="churn", 
+       x=NULL, 
+       y=NULL, 
+       title="Pie Chart of churn", 
+       caption="Source: churn")
+  
+pie + coord_polar(theta = "y", start=0)
+```
+
+```{r}
+library(ggplot2)
+theme_set(theme_classic())
+
+# Plot
+g <- ggplot(data_imp, aes(InternetService))
+g + geom_density(aes(fill=factor(gender)), alpha=0.8) + 
+    labs(title="Density plot", 
+         caption="Source: internet services",
+         x="internet services",
+         fill="# Gender")
+```
+*Churn vs tenure
+```{r}
+myplot <- ggplot(data_imp, aes(tenure, group = Churn)) + 
+          geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count") + 
+          scale_y_continuous(labels=scales::percent) +
+          theme( axis.text.x  = element_text(angle=90, vjust=0.5, size=10),legend.position="none") +
+          facet_grid(~Churn)
+myplot
+```
+
+*payment method vs churn
+```{r}
+myplot <- ggplot(data_imp, aes(PaymentMethod, group = Churn)) + 
+          geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count") + 
+          scale_y_continuous(labels=scales::percent) +
+          theme( axis.text.x  = element_text(angle=90, vjust=0.5, size=10),legend.position="none") +
+          facet_grid(~Churn)
+myplot
+```
+obser:-
+*Gender vs Tenure vs churn
+```{r}
+ggplot(data = data_imp,aes(x=gender,y=tenure,col=Churn),  palette = c("blue", "red"))+geom_jitter()
+
+```
+observation:-most of people with less than 1 year taking service switch the service early. 
+*internet service vs churn
+```{r}
+ggplot(data = data_imp,aes(x=InternetService,fill=Churn))+geom_bar(position = 'dodge')
+
+```
+```{r}
+ggplot(data = data_imp,aes(x=InternetService,fill=TechSupport))+geom_bar(position = 'dodge')
+
+```
+observation:-here we can merge no internet service with no tech support.
+```{r}
+ggplot(data = data_imp,aes(x=StreamingMovies,fill=Contract))+geom_bar(position = 'dodge')
+
+```
+
+```{r}
+myplot <- ggplot(data_imp, aes(Contract, group = Churn)) + 
+          geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count") + 
+          scale_y_continuous(labels=scales::percent) +
+          theme( axis.text.x  = element_text(angle=90, vjust=0.5, size=10),legend.position="none") +
+          facet_grid(~Churn)
+myplot
+
+```
+observation:-less switching rate of month-month contract people.
+
+```{r}
+myplot <- ggplot(data_imp, aes(SeniorCitizen, group = PaymentMethod)) + 
+          geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count") + 
+          scale_y_continuous(labels=scales::percent) +
+          theme( axis.text.x  = element_text(angle=90, vjust=0.5, size=10),legend.position="none") +
+          facet_grid(~PaymentMethod)
+myplot
+
+
+```
+observatio:-senior citizen are mostly prefer to pay through by electronic way..
+
+```{r}
+#Subsetting Customers with internet
+internet <- subset(data_imp, data_imp$InternetService != "No")
+
+#Subsetting customers without internet
+nointernet <- subset(data_imp, data_imp$InternetService == "No")
+
+# Plot Churn by contract type for customers without internet
+g <- ggplot(nointernet, aes(Contract)) + geom_bar(aes(fill = Churn)) + ggtitle("Churn by Contract Type for Customers without Internet")
+g
+
+
+
+```
+internet user left the services early.
+```{r}
+# Plot Churn by contract type for customers with internet
+g1 <- ggplot(internet, aes(Contract)) + geom_bar(aes(fill = Churn)) + ggtitle("Churn by Contract Type for Customers with Internet")
+g1
+
+```
+
+```{r}
+#Tenure for different types of contract histograms
+#Tenure for month-to month option
+mtm <- subset(dt, dt$Contract=="Month-to-month")
+mtmplot1 <- ggplot(mtm, aes(x=tenure))  + geom_histogram(binwidth=5, color="red", fill="#DD5868") +
+  ggtitle("Month to Month Contract") + theme(plot.title = element_text(hjust = 0.5)) + xlab("Tenure, months") + ylab("# of customers")
+mtmplot1
+
+#Tenure for one year contract option
+
+oneyear <- subset(dt, dt$Contract=="One year")
+mtmplot2 <- ggplot(oneyear, aes(x=tenure))  + geom_histogram(binwidth=5, color="blue", fill="#1E4594") +
+  ggtitle("One Year Contract") + theme(plot.title = element_text(hjust = 0.5)) + xlab("Tenure, months") + ylab("# of customers")
+mtmplot2
+
+#Tenure for two year contract option
+twoyear <- subset(dt, dt$Contract=="Two year")
+mtmplot3 <- ggplot(twoyear, aes(x=tenure))  + geom_histogram(binwidth=5, color="green", fill="#125528") +
+  ggtitle("Two Year Contract") + theme(plot.title = element_text(hjust = 0.5)) + xlab("Tenure, months") + ylab("# of customers")
+mtmplot3
+```
+observation:-year of contract of plays vital role in Tenure of customers 
+1.month -month contract customers are more likely left the service.
+2.as  two contract customers are less likely to switch there service.
+
+
+
+```{r}
+library(ggpubr)
+library(magrittr)
+ggdensity(data_imp, x = 'MonthlyCharges',
+   add = "mean", rug = TRUE,
+   color = 'Churn', fill = 'Churn',
+   palette = c("blue", "red"))
+
+```
+observation:-the customers pays  monthly charges more than mean values are likrly to change the services where as huge number of peoples who  are less paid are not changing the service
+
+#building Decision Tree
+```{r}
+
+DT_C50_rules <- C5.0(Churn~., 
+                     data=train_Data, 
+                     rules=TRUE
+                     )
+
+summary(DT_C50_rules)
+
+```
+
+Plot C50 model (tree)
+
+```{r}
+
+DT_C50 <- C5.0(Churn~., 
+               data=train_Data
+               )
+
+plot(DT_C50)
+
+```
+
+
+Check variable importance
+
+```{r}
+
+C5imp(DT_C50_rules, pct=TRUE)
+a<-data.frame(C5imp(DT_C50_rules, pct=TRUE))
+attributes<-c(rownames(a))
+importance<-c(a[,1])
+imp_var<-cbind(attributes,importance)
+imp_var<-data.frame(imp_var)
+attach(imp_var)
+
+ggplot(data = imp_var,aes(x=attributes ,y =importance ))+geom_histogram(stat = "identity",fill="aquamarine4")+coord_flip()
+
+```
+
+Predict and evaluate C50 on test data
+
+```{r}
+
+pred_val = predict(DT_C50_rules, newdata=test_Data, type="class")
+```
+
+Evaluate C50 on test data
+
+```{r}
+
+confusionMatrix(test_Data$Churn, pred_val)
+
+```
+
+## RPART Model
+```{r}
+
+library(DMwR)
+library(caret)
+library(C50)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(ipred)
+library(randomForest)
+DT_rpart <- rpart(Churn~., data=train_Data, method="class")
+```
+
+RPART as rules
+
+```{r message=FALSE}
+
+asRules(DT_rpart)
+
+```
+
+Plot RPART model
+
+```{r}
+
+rpart.plot(DT_rpart)
+
+```
+
+Check variable importance
+
+```{r}
+DT_rpart$variable.importance 
+
+```
+
+Predict RPART on test data
+
+```{r}
+
+pred_val <- predict(DT_rpart, 
+                    newdata=test_Data, 
+                    type="class"
+                    )
+
+```
+
+Evaluate RPART on test data
+
+```{r}
+
+confusionMatrix(test_Data$Churn, pred_val)
+
+```
+
+## Cost Parameter Tuning
+
+* *When to stop splitting?*
+
+* Decision Tree will grow the tree until all nodes are pure. Even if the information gain is low, the node splits hoping a better information gain at a later split. But this leads to overfitting.
+
+* There are a few ways to handle overfitting :
+
+1) Information gain threshold.
+
+2) Minimum instances required per node.
+
+3) Maximum tree depth
+
+4) **Grow and Prune : Once the tree is fully grown, calculate the information gain for all branches (2 nodes at a time) and prune the nodes with low overall IG.**
+
+* _**Complexity Paramter (cp) penalizes for the number of nodes and in turn control the tree depth.**_
+
+* cp = high, means more penalty - simple tree
+
+* cp = 0, means no penalty - full grown tree
+
+* cp = low, means less penaly - complex tree
+
+Use cp to train RPART
+
+```{r}
+set.seed(151)
+DT_rpart_Reg <- rpart(Churn~., 
+                      data=train_Data, 
+                      method="class", 
+                      control = rpart.control(cp = 0.001)
+                      )
+
+printcp(DT_rpart_Reg)
+
+```
+
+Cost Parameter Plot
+
+```{r}
+
+plotcp(DT_rpart_Reg)
+
+```
+
+Choose the CP value for which we have minimum xerror value
+
+```{r}
+
+CP <- DT_rpart_Reg$cptable[which.min(DT_rpart_Reg$cptable[,"xerror"]), "CP" ]
+CP
+
+```
+
+Train RPART with optimal cp value
+
+```{r}
+
+DT_rpart_Reg <- rpart(Churn~., 
+                      data=train_Data,method="class", 
+                      control = rpart.control(cp = 0.002291826)
+                      )
+
+DT_rpart_Reg
+
+```
+
+Predict optimised RPART on test data
+
+```{r}
+
+predCartval <- predict(DT_rpart_Reg, 
+                       newdata=test_Data, 
+                       type="class"
+                       )
+
+```
+
+Evaluate optimised RPART on test data
+
+```{r}
+
+confusionMatrix(predCartval,test_Data$Churn)
+
+```
+
+# Ensemble Learning Objective
+
+# Bagged Trees
+
+* Bagged trees is **BAGGING + DECISION TREES**
+
+Train a bagged tree model
+
+```{r}
+
+DT_bag <- bagging(Churn ~ . , 
+                  data = train_Data, 
+                  control = rpart.control(cp =0.002291826 
+                                          )
+                  )
+
+```
+
+Predict Bagging on test data
+
+```{r}
+
+preds_tree_bag <- predict(DT_bag, test_Data)
+
+```
+
+Evaluate Bagging on test data
+
+```{r}
+
+confusionMatrix(preds_tree_bag, test_Data$Churn)
+
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+#create a task
+library(mlr)
+traintask <- makeClassifTask(data = train_Data,target = "Churn")
+testtask <- makeClassifTask(data = test_Data,target = "Churn")
+```
+
+```{r}
+#create learner
+bag <- makeLearner("classif.rpart",predict.type = "response")
+bag.lrn <- makeBaggingWrapper(learner = bag,bw.iters = 100,bw.replace = TRUE)
+```
+*I've set up the bagging algorithm which will grow 100 trees on randomized samples of data with replacement. To check the performance, let's set up a validation strategy too:
+Train the Random Forest model
+```{r}
+#set 5 fold cross validation
+rdesc <- makeResampleDesc("CV",iters=10L)
+```
+*For faster computation, we'll use parallel computation backend. Make sure your machine / laptop doesn't have many programs running at backend.
+
+```{r message=FALSE, warning=FALSE}
+#set parallel backend (Windows)
+library(parallelMap)
+library(parallel)
+parallelStartSocket(cpus = detectCores())
+```
+
+
+
+```{r}
+r <- resample(learner = bag.lrn
+              ,task = traintask
+              ,resampling = rdesc
+              ,measures = list(tpr,fpr,fnr,fpr,acc)
+              ,show.info = T)
+r$measures.test
+```
+*pr.test.mean=0.9112016
+*fpr.test.mean=0.5236005
+*fnr.test.mean=0.0887984
+*fpr.test.mean=0.5236005
+*acc.test.mean=0.7951732
+
+```{r}
+r <- resample(learner = bag.lrn
+              ,task = testtask
+              ,resampling = rdesc
+              ,measures = list(tpr,fpr,fnr,tnr,acc)
+              ,show.info = T)
+r$pred
+```
+```{r}
+#make randomForest learner
+rf.lrn <- makeLearner("classif.randomForest")
+rf.lrn$par.vals <- list(ntree = 500L,
+                          importance=TRUE)
+
+r <- resample(learner = rf.lrn
+                ,task = traintask
+                ,resampling = rdesc
+                ,measures = list(tpr,fpr,fnr,tnr,acc)
+                ,show.info = T)
+```
+
+```{r}
+r$measures.test
+
+```
+```{r}
+#set cutoff
+rf.lrn$par.vals <- list(ntree = 100L,
+                          importance=TRUE,
+                          cutoff = c(0.75,0.25))
+
+r <- resample(learner = rf.lrn
+               ,task = traintask
+               ,resampling = rdesc
+               ,measures = list(tpr,fpr,fnr,tnr,acc)
+               ,show.info = T)
+```
+```{r}
+r$measures.test
+```
+
+```{r}
+getParamSet(rf.lrn)
+
+#set parameter space
+params <- makeParamSet(
+makeIntegerParam("mtry",lower = 1,upper = 10),
+makeIntegerParam("nodesize",lower = 5,upper = 50)
+)
+
+#set validation strategy
+rdesc <- makeResampleDesc("CV",iters=5L)
+
+#set optimization technique
+ctrl <- makeTuneControlRandom(maxit = 5L)
+
+#start tuning
+tune <- tuneParams(learner = rf.lrn
+                    ,task = traintask
+                    ,resampling = rdesc
+                    ,measures = list(acc)
+                    ,par.set = params
+                    ,control = ctrl
+                    ,show.info = T)
+
+```
+```{r}
+
+```
+
+```{r}
+set.seed(123)
+
+DT_RF = randomForest(Churn ~ ., 
+                     data=train_Data, 
+                     keep.forest=TRUE,
+                     ntree=500
+                     ) 
+DT_RF
+```
+
+
+Important attributes
+
+```{r}
+
+DT_RF$importance
+
+```
+
+Extract and store important variables obtained from the random forest model
+
+```{r}
+
+rf_Imp_Attr = data.frame(DT_RF$importance)
+
+rf_Imp_Attr = data.frame(Attributes = row.names(rf_Imp_Attr), Importance = rf_Imp_Attr[,1])
+
+rf_Imp_Attr = rf_Imp_Attr[order(rf_Imp_Attr$Importance, decreasing = TRUE),]
+
+rf_Imp_Attr
+
+```
+
+Variable Importance Plot
+
+```{r}
+
+varImpPlot(DT_RF)
+
+```
+
+Predict Random Forest on Test Data
+
+```{r}
+set.seed(456)
+# Predicton Test Data
+pred_Test = predict(DT_RF, test_Data[,setdiff(names(test_Data),
+                                              "churn")],
+                    type="response", 
+                    norm.votes=TRUE)
+```
+
+Evaluate Random Forest on Test Data
+
+```{r}
+confusionMatrix(pred_Test, test_Data$Churn)
+
+```
+*to check no of tress contributes in  error.
+```{r}
+plot(DT_RF)
+DT_RF$confusion
+```
+*observation- after 100 tress model gives cont error hence take tress=100 in further calculations.
+
+
+
+## Build random forest using top 9 important attributes
+
+```{r}
+
+top_Imp_Attr = as.character(rf_Imp_Attr$Attributes[1:14])
+
+# Build the classification model using randomForest
+DT_RF_Imp = randomForest(Churn~.,
+                         data=train_Data[,c(top_Imp_Attr,"Churn")], 
+                         keep.forest=TRUE,
+                         ntree=6000, set.seed(123)
+                         ) 
+```
+
+Predict Random Forest on Test Data
+
+```{r}
+# Predicton Test Data
+pred_RF_Imp = predict(DT_RF_Imp, 
+                    test_Data[,setdiff(names(test_Data), "Churn")],
+                    type="response", 
+                    norm.votes=TRUE)
+
+```
+
+Evaluate Random Forest on Test Data
+
+```{r}
+
+confusionMatrix(pred_RF_Imp, test_Data$Churn)
+
+```
+
+
+
+*as total charges and monthly charges are correlated and total charges contributes more in the prediction hence lets monthly charges remove
+```{r}
+data_new=train_Data[,c(top_Imp_Attr,"Churn")]
+data_new$MonthlyCharges<-NULL
+DT_RF_Imp = randomForest(Churn~.,
+                         data_new, 
+                         keep.forest=TRUE,
+                         ntree=5000, set.seed(123)
+                         ) 
+```
+
+Predict Random Forest new on Test Data
+
+```{r}
+# Predicton Test Data
+
+pred_RF_Imp = predict(DT_RF_Imp, 
+                    test_Data[,setdiff(names(), "Churn")],
+                    type="response", 
+                    norm.votes=TRUE)
+
+```
+
+Evaluate Random Forest new on Test Data
+
+```{r}
+
+confusionMatrix(pred_RF_Imp, test_Data$Churn)
+
+```
+
+
+
+
+* Parameters in tuneRF function 
+
+1. The stepFactor specifies at each iteration, mtry is inflated (or deflated) by this value
+
+2. The improve specifies the (relative) improvement in OOB error must be by this much for the search to continue
+
+3. The trace specifies whether to print the progress of the search (default = TRUE)
+
+4. The plot specifies whether to plot the OOB error as function of mtry (default = TRUE)
+#RF tuning
+##Algorithmic tuning
+```{r}
+
+DT_RF_tune <- tuneRF(x = train_Data[,c(top_Imp_Attr,"Churn")], 
+               y = train_Data$Churn , 
+               ntreeTry =50,
+               stepFactor = 1.2,
+               improve = 0.001
+               
+               )
+
+```
+
+View the iterations of tuneRF
+*min features to reduce oob.
+```{r}
+
+DT_RF_tune
+
+best_m <- DT_RF_tune[DT_RF_tune[, 2] == min(DT_RF_tune[, 2]), 1]
+```
+observation-here we got 3. means 
+*Build Model with best m again 
+
+```{r}
+
+RF_tune <- randomForest(Churn~., 
+                   data=train_Data, 
+                   mtry=best_m, 
+                   importance=TRUE,
+                   ntree=50, 
+                   set.seed(123)
+                   )
+```
+
+
+Predict Random Forest on Test Data
+
+```{r}
+
+pred_RF_Tune = predict(RF_tune, 
+                    test_Data[,setdiff(names(test_Data), "churn")],
+                    type="response", 
+                    norm.votes=TRUE)
+```
+
+Evaluate Random Forest on Test Data
+
+```{r}
+
+confusionMatrix(pred_RF_Tune, test_Data$Churn)
+
+```
+
+#Grid tuning(grid search)
+```{r}
+control <- trainControl( method="repeatedcv",number=10, repeats=3, search="grid")
+set.seed(123)
+tunegrid <- expand.grid(.mtry=c(1:10))
+rf_gridsearch <- train(Churn~., data=train_Data[,c(top_Imp_Attr,"Churn")], method="rf", metric="Accuracy", tuneGrid=tunegrid, trControl=control)
+print(rf_gridsearch)
+plot(rf_gridsearch)
+```
+
+```{r}
+
+#best mtry for data_new in grid search
+best_m <-rf_gridsearch$bestTune[,1] 
+best_m
+```
+
+
+imp_variables
+```{r}
+grid_RF$importance
+```
+```{r}
+varImpPlot(grid_RF)
+```
+*prediction on test
+```{r}
+pred_RF_grid = predict(grid_RF, 
+                    test_Data[,setdiff(names(test_Data), "churn")],
+                    type="response", 
+                    norm.votes=TRUE)
+ ```
+
+```{r}
+confusionMatrix(pred_RF_grid, test_Data$Churn)
+
+```
+
+```{r echo=TRUE}
+#random search
+library(caret)
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search="random")
+set.seed(123)
+mtry <- sqrt(ncol(train_Data))
+rf_random <- train(Churn~., data=train_Data, method="rf", metric="accuracy", tuneLength=15, trControl=control)
+print(rf_random)
+plot(rf_random)
+
+```
+
+
+```{r}
+library(caret)
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search="random")
+set.seed(123)
+mtry <- sqrt(ncol(train_Data))
+rf_random <- train(Churn~., data=train_Data[,c(top_Imp_Attr,"Churn")], method="rf", metric="accuracy", tuneLength=15, trControl=control)
+print(rf_random)
+plot(rf_random)
+```
+
+*Lets build the model on random search result on train data
+mtry-2,ntree-100,data-train data
+```{r}
+RF_randomsearch <- randomForest(Churn~., 
+                   data=train_Data, 
+                   mtry=2, 
+                   importance=TRUE,
+                   ntree=100, 
+                   set.seed(1234)
+                   )
+
+```
+
+```{r}
+pred_RF_rand = predict(RF_randomsearch, 
+                  test_Data,
+                    type="response"
+                    ,norm.votes=TRUE)
+```
+
+
+
+```{r}
+confusionMatrix(pred_RF_rand, test_Data$Churn)
+```
+
+
+
+
+*buld model on
+data-train_Data[,c(top_Imp_Attr,"Churn")]
+mtry-2
+ntree-100
+```{r}
+RF_randomsearch <- randomForest(Churn~., 
+                   data=train_Data[,c(top_Imp_Attr,"Churn")],
+                   mtry=2, 
+                   importance=TRUE,
+                   ntree=100, 
+                   set.seed(1234)
+                   )
+#predict on test data
+pred_RF_rand = predict(RF_randomsearch, 
+                  test_Data,
+                    type="response"
+                    ,norm.votes=TRUE)
+#confusion matrix
+confusionMatrix(pred_RF_rand, test_Data$Churn)
+```
+
+
+
+
+
+#boosting
+```{r}
+#using one hot encoding 
+library(mlr)
+library(data.table)
+library(xgboost)
+
+#separates target for labeling
+target_train <- train_Data$Churn 
+target_test<- test_Data$Churn
+
+#assign train and test data
+tr_data=train_Data
+ts_data=test_Data
+tr_data$Churn<-NULL
+ts_data$Churn<-NULL
+#here we dummies od data and matrix because boosting required input data in matrix format 
+new_tr <- model.matrix(~.+0,data =tr_data)  
+new_ts <- model.matrix(~.+0,data = ts_data)
+#convert factor to numeric 
+labels <- as.numeric(target_train)-1 #lables required for boosting -this for train
+ts_label <- as.numeric(target_test)-1#for test
+
+#preparing matrix 
+dtrain <- xgb.DMatrix(data = new_tr,label = labels) 
+dtest <- xgb.DMatrix(data = new_ts,label=ts_label)
+
+#default parameters
+params <- list(booster = "gbtree", objective = "binary:logistic", eta=0.3, gamma=0, max_depth=6, min_child_weight=1, subsample=1, colsample_bytree=1)
+
+
+```
+*Using the inbuilt xgb.cv function, let's calculate the best nround for this model. In addition, this function also returns CV error, which is an estimate of test error.
+```{r}
+xgbcv <- xgb.cv( params = params, data = dtrain, nrounds = 100, nfold = 5, showsd = T, stratified = T, print_every_n = 10, early_stopping_rounds = 20, maximize = F)
+
+```
+*mean errors
+```{r}
+xgbcv$evaluation_log
+min(xgbcv$evaluation_log[,4])
+```
+
+
+
+observation-least error at iteration-12 train-error:0.158031+0.002874	test-error:0.205640+0.011306
+build again the model on nrounds-12 keep all parameters as default.
+```{r}
+#first default - model training
+xgb1 <- xgb.train (params = params, data = dtrain, nrounds = 12, watchlist = list(val=dtest,train=dtrain), print.every.n = 10, early.stop.round = 10, maximize = F , eval_metric = "error",set.seed(123))
+#model prediction
+xgbpred <- predict (xgb1,dtest)
+xgbpred <- ifelse (xgbpred > 0.49,1,0)#as accuracy of model is imp here. 
+```
+```{r}
+#confusion matrix
+confusionMatrix (as.factor(xgbpred),as.factor(ts_label))
+#Accuracy - 78.5%` 
+
+#view variable importance plot
+mat <- xgb.importance (feature_names = colnames(new_tr),model = xgb1)
+xgb.plot.importance (importance_matrix = mat) 
+```
+*As you can see, we've achieved better accuracy than a random forest model using default parameters in xgboost. Can we still improve it? Let's proceed to the random / grid search procedure and attempt to find better accuracy.
+
+
+
+```{r}
+#create tasks
+traintask <- makeClassifTask (data = train_Data,target = "Churn")
+testtask <- makeClassifTask (data = test_Data,target = "Churn")
+
+#do one hot encoding` 
+traintask <- createDummyFeatures (obj = traintask) 
+testtask <- createDummyFeatures (obj = testtask)
+```
+
+```{r message=FALSE, warning=FALSE}
+#create learner
+lrn <- makeLearner("classif.xgboost",predict.type = "response")
+lrn$par.vals <- list( objective="binary:logistic", eval_metric="error", nrounds=100L, eta=0.1)
+
+#set parameter space
+params <- makeParamSet( makeDiscreteParam("booster",values = c("gbtree","gblinear")), makeIntegerParam("max_depth",lower = 3L,upper = 10L), makeNumericParam("min_child_weight",lower = 1L,upper = 10L), makeNumericParam("subsample",lower = 0.5,upper = 1), makeNumericParam("colsample_bytree",lower = 0.5,upper = 1))
+
+#set resampling strategy
+rdesc <- makeResampleDesc("CV",stratify = T,iters=5L)
+```
+
+
+
+```{r}
+#search strategy
+ctrl <- makeTuneControlRandom(maxit = 10L)
+```
+
+```{r}
+#set parallel backend
+library(parallel)
+library(parallelMap) 
+parallelStartSocket(cpus = detectCores())
+
+set.seed(141)
+#parameter tuning
+mytune <- tuneParams(learner = lrn, task = traintask, resampling = rdesc, measures = acc, par.set = params, control = ctrl, show.info = T)
+mytune$y
+mytune$x
+```
+
+```{r}
+#set hyperparameters
+lrn_tune <- setHyperPars(lrn,par.vals = mytune$x)
+lrn_tune<-setHyperPars2(lrn,par.vals = mytune$x)
+lrn_tune
+#train model
+#xgmodel <- train(learner = lrn_tune,task = traintask)
+#predict model
+#xgpred <- predict(xgmodel,testtask)
+```
+
+
+
+
+```{r}
+#objective=binary:logistic,eval_metric=error,nrounds=100,eta=0.1,booster=gblinear,max_depth=5,min_child_weight=3.08,subsample=0.653,colsample_bytree=0.874
+
+
+
+params_new <- list(booster ="gbtree", objective = "binary:logistic", eta=0.1, gamma=0, max_depth=4, min_child_weight=2.55, subsample=0.575, colsample_bytree=0.881)
+
+
+xgbcv <- xgb.cv( params = params_new, data = dtrain, nrounds = 100, nfold = 5, showsd = T, stratified = T, print_every_n = 10, early_stopping_rounds = 20, maximize = F)
+
+xgbcv$best_iteration
+```
+
+```{r}
+#first default - model training
+xgb1 <- xgb.train (params = params_new, data = dtrain, nrounds = 40, watchlist = list(val=dtest,train=dtrain), print.every.n = 20, early.stop.round = 20, maximize = F , eval_metric = "error",set.seed(123))
+#model prediction
+xgbpred <- predict (xgb1,dtest)
+xgbpred <- ifelse (xgbpred > 0.50,1,0)
+
+```
+
+
+```{r}
+#confusion matrix
+confusionMatrix (as.factor(xgbpred),as.factor(ts_label))
+
+
+#view variable importance plot
+mat <- xgb.importance (feature_names = colnames(new_tr),model = xgb1)
+xgb.plot.importance (importance_matrix = mat) 
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
